@@ -32,96 +32,6 @@ function PasswordInput({ value, onChange, placeholder, onKeyDown, autoFocus }) {
   )
 }
 
-// ── Forgot password flow ──────────────────────────────────────────────────────
-function ForgotPassword({ onBack }) {
-  const { forgotPassword, resetPassword } = useAuth()
-  const { showToast } = useToast()
-  const [step, setStep] = useState('email') // 'email' | 'code' | 'done'
-  const [email, setEmail] = useState('')
-  const [code, setCode] = useState('')
-  const [newPass, setNewPass] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-  const [resetMeta, setResetMeta] = useState(null)
-
-  const handleSendCode = async () => {
-    if (!email.trim()) { setError('Enter your email'); return }
-    setLoading(true); setError('')
-    try {
-      const meta = await forgotPassword(email.trim())
-      setResetMeta(meta)
-      setStep('code')
-      showToast('Reset code sent to your email!', 'success')
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleReset = async () => {
-    if (!code || code.length < 6) { setError('Enter the 6-digit code'); return }
-    if (!newPass || newPass.length < 6) { setError('Password must be 6+ characters'); return }
-    setLoading(true); setError('')
-    try {
-      await resetPassword(resetMeta.email, code, newPass)
-      setStep('done')
-      showToast('Password reset! Sign in now.', 'success')
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  if (step === 'done') return (
-    <div style={{ textAlign: 'center', width: '100%', maxWidth: 340 }}>
-      <div style={{ fontSize: 48, marginBottom: 12 }}>🎉</div>
-      <h2 style={{ color: '#111b21', marginBottom: 8 }}>Password reset!</h2>
-      <p style={{ color: '#667781', marginBottom: 24 }}>You can now sign in with your new password.</p>
-      <button className="btn-primary" onClick={onBack}>Back to sign in</button>
-    </div>
-  )
-
-  return (
-    <div style={{ width: '100%', maxWidth: 340 }}>
-      <button className="btn-link" onClick={onBack} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 20, fontSize: 13 }}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
-        Back to sign in
-      </button>
-      <h2 style={{ color: '#111b21', fontSize: 18, marginBottom: 6, fontWeight: 500 }}>
-        {step === 'email' ? 'Forgot password?' : 'Enter reset code'}
-      </h2>
-      <p style={{ color: '#667781', fontSize: 13, marginBottom: 24 }}>
-        {step === 'email' ? 'Enter your email and we\'ll send a reset code.' : `Enter the 6-digit code sent to ${resetMeta?.email}`}
-      </p>
-      {step === 'email' && (
-        <div className="form-group">
-          <label>Email</label>
-          <input type="email" className="form-input" placeholder="your@email.com" value={email} onChange={e => { setEmail(e.target.value); setError('') }} onKeyDown={e => e.key === 'Enter' && handleSendCode()} autoFocus />
-        </div>
-      )}
-      {step === 'code' && (
-        <>
-          <div className="form-group">
-            <label>Reset code</label>
-            <input type="text" inputMode="numeric" className="form-input" placeholder="6-digit code" maxLength={6}
-              value={code} onChange={e => { setCode(e.target.value.replace(/\D/g, '')); setError('') }} autoFocus />
-          </div>
-          <div className="form-group">
-            <label>New password</label>
-            <PasswordInput value={newPass} onChange={e => { setNewPass(e.target.value); setError('') }} placeholder="Min 6 characters" onKeyDown={e => e.key === 'Enter' && handleReset()} />
-          </div>
-        </>
-      )}
-      {error && <p className="error-text">{error}</p>}
-      <button className="btn-primary" onClick={step === 'email' ? handleSendCode : handleReset} disabled={loading}>
-        {loading ? 'Please wait...' : step === 'email' ? 'Send reset code' : 'Reset password'}
-      </button>
-    </div>
-  )
-}
-
 export default function Login({ onPhoneSubmit }) {
   const { login } = useAuth()
   const { showToast } = useToast()
@@ -129,11 +39,12 @@ export default function Login({ onPhoneSubmit }) {
   const [country, setCountry] = useState(countries[0])
   const [showDrop, setShowDrop] = useState(false)
   const [phone, setPhone] = useState('')
-  const [email, setEmail] = useState('')
+  const [signinCountry, setSigninCountry] = useState(countries[0])
+  const [showSigninDrop, setShowSigninDrop] = useState(false)
+  const [signinPhone, setSigninPhone] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [showForgot, setShowForgot] = useState(false)
 
   const handleNext = () => {
     if (!phone || phone.length < 6) { setError('Enter a valid phone number'); return }
@@ -141,10 +52,10 @@ export default function Login({ onPhoneSubmit }) {
   }
 
   const handleSignIn = async () => {
-    if (!email || !password) { setError('Enter email and password'); return }
+    if (!signinPhone || !password) { setError('Enter phone number and password'); return }
     setLoading(true); setError('')
     try {
-      await login(email.trim(), password)
+      await login(signinCountry.code + signinPhone, password)
       showToast('Welcome back!', 'success')
     } catch (e) {
       setError(e.message || 'Login failed.')
@@ -152,20 +63,6 @@ export default function Login({ onPhoneSubmit }) {
       setLoading(false)
     }
   }
-
-  if (showForgot) return (
-    <div className="wa-page">
-      <header className="wa-header">
-        <WaLogo />
-        <span>WhatsApp</span>
-      </header>
-      <div className="wa-center">
-        <div className="wa-card">
-          <ForgotPassword onBack={() => setShowForgot(false)} />
-        </div>
-      </div>
-    </div>
-  )
 
   return (
     <div className="wa-page">
@@ -176,11 +73,12 @@ export default function Login({ onPhoneSubmit }) {
       <div className="wa-center">
         <div className="wa-card">
           <h1>{tab === 'new' ? 'Enter phone number' : 'Welcome back'}</h1>
-          <p className="subtitle">{tab === 'new' ? 'Select country and enter your phone number.' : 'Sign in with your email and password.'}</p>
+          <p className="subtitle">{tab === 'new' ? 'Select country and enter your phone number.' : 'Sign in with your phone number and password.'}</p>
           <div className="tabs">
             <button className={'tab' + (tab === 'new' ? ' active' : '')} onClick={() => { setTab('new'); setError('') }}>New account</button>
             <button className={'tab' + (tab === 'signin' ? ' active' : '')} onClick={() => { setTab('signin'); setError('') }}>Sign in</button>
           </div>
+
           {tab === 'new' ? (
             <>
               <div className="country-select">
@@ -199,19 +97,23 @@ export default function Login({ onPhoneSubmit }) {
             </>
           ) : (
             <>
-              <div className="form-group">
-                <label>Email</label>
-                <input type="email" className="form-input" placeholder="your@email.com" value={email} onChange={e => { setEmail(e.target.value); setError('') }} onKeyDown={e => e.key === 'Enter' && handleSignIn()} autoFocus />
+              <div className="country-select">
+                <button className={'country-btn' + (showSigninDrop ? ' open' : '')} onClick={() => setShowSigninDrop(!showSigninDrop)} type="button">
+                  <div className="left"><span style={{ fontSize: 20 }}>{signinCountry.flag}</span><span>{signinCountry.name}</span></div>
+                  <span className="arrow">▼</span>
+                </button>
+                {showSigninDrop && (<><div className="overlay" onClick={() => setShowSigninDrop(false)} /><div className="country-dropdown">{countries.map(c => (<button key={c.name+c.code} className="country-option" onClick={() => { setSigninCountry(c); setShowSigninDrop(false) }}><span style={{ fontSize: 18 }}>{c.flag}</span><span>{c.name}</span><span className="code">{c.code}</span></button>))}</div></>)}
+              </div>
+              <div className="phone-row" style={{ marginBottom: 16 }}>
+                <div className="phone-prefix">{signinCountry.code}</div>
+                <input type="tel" className="phone-input" placeholder="Phone number" value={signinPhone} onChange={e => { setSigninPhone(e.target.value.replace(/\D/g, '')); setError('') }} autoFocus />
               </div>
               <div className="form-group">
                 <label>Password</label>
                 <PasswordInput value={password} onChange={e => { setPassword(e.target.value); setError('') }} placeholder="Enter password" onKeyDown={e => e.key === 'Enter' && handleSignIn()} />
               </div>
-              <div style={{ width: '100%', maxWidth: 340, textAlign: 'right', marginBottom: 8, marginTop: -8 }}>
-                <button className="btn-link" style={{ fontSize: 13 }} onClick={() => setShowForgot(true)}>Forgot password?</button>
-              </div>
               {error && <p className="error-text">{error}</p>}
-              <button className="btn-primary" onClick={handleSignIn} disabled={loading || !email || !password} style={{ marginTop: 8 }}>
+              <button className="btn-primary" onClick={handleSignIn} disabled={loading || !signinPhone || !password} style={{ marginTop: 8 }}>
                 {loading ? 'Signing in...' : 'Sign in'}
               </button>
             </>
