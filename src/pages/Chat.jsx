@@ -369,45 +369,47 @@ export default function Chat() {
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const recorder = new MediaRecorder(stream)
+      const mimeType = ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4']
+        .find(t => MediaRecorder.isTypeSupported(t)) || ''
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : {})
       mediaRecorderRef.current = recorder
       audioChunksRef.current = []
       recorder.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data) }
-      recorder.start()
+      recorder.start(250)
       setIsRecording(true)
       setRecordingTime(0)
       recordingTimerRef.current = setInterval(() => setRecordingTime(t => t + 1), 1000)
     } catch (e) { showToast('Microphone access denied', 'error') }
   }
 
-  const stopRecording = async () => {
-    if (!mediaRecorderRef.current) return
-    mediaRecorderRef.current.stop()
-    mediaRecorderRef.current.stream.getTracks().forEach(t => t.stop())
+  const stopRecording = () => {
+    const recorder = mediaRecorderRef.current
+    if (!recorder || recorder.state === 'inactive') return
     clearInterval(recordingTimerRef.current)
     setIsRecording(false)
     setRecordingTime(0)
-    mediaRecorderRef.current.onstop = async () => {
+    // Set onstop BEFORE stop() to avoid race condition
+    recorder.onstop = async () => {
       if (!activeChat?.id) return
-      const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
-      if (blob.size < 1000) return
+      const mimeType = recorder.mimeType || 'audio/webm'
+      const ext = mimeType.includes('ogg') ? 'ogg' : mimeType.includes('mp4') ? 'mp4' : 'webm'
+      const blob = new Blob(audioChunksRef.current, { type: mimeType })
+      if (blob.size < 500) { showToast('Recording too short', 'error'); return }
       setUploading(true)
       try {
-        const fp = `${activeChat.id}/voice_${Date.now()}.webm`
-        const { error: ue } = await supabase.storage.from('chat-files').upload(fp, blob)
+        const fp = `${activeChat.id}/voice_${Date.now()}.${ext}`
+        const { error: ue } = await supabase.storage.from('chat-files').upload(fp, blob, { contentType: mimeType })
         if (ue) throw ue
         const { data: u } = supabase.storage.from('chat-files').getPublicUrl(fp)
         const { data: newMsg } = await supabase.from('messages').insert({ chat_id: activeChat.id, sender_id: currentUser.id, type: 'audio', file_url: u.publicUrl, file_size: blob.size, read: false }).select().single()
-        if (newMsg) {
-          setMessages(prev => prev.find(m => m.id === newMsg.id) ? prev : [...prev, newMsg])
-          scroll()
-        }
-        await supabase.from('chats').update({ last_message_text: '🎤 Voice message', last_message_sender: currentUser.id, last_message_type: 'audio', last_message_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', activeChat.id)
-      } catch (e) { showToast('Failed to send voice message', 'error') }
+        if (newMsg) { setMessages(prev => prev.find(m => m.id === newMsg.id) ? prev : [...prev, newMsg]); scroll() }
+        await supabase.from('chats').update({ last_message_text: '\ud83c\udfa4 Voice message', last_message_sender: currentUser.id, last_message_type: 'audio', last_message_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', activeChat.id)
+      } catch (e) { showToast('Failed to send voice message', 'error'); console.error(e) }
       finally { setUploading(false) }
     }
+    recorder.stop()
+    recorder.stream.getTracks().forEach(t => t.stop())
   }
-
   const cancelRecording = () => {
     if (!mediaRecorderRef.current) return
     mediaRecorderRef.current.stream.getTracks().forEach(t => t.stop())
