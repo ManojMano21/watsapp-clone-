@@ -21,9 +21,9 @@ export default function App() {
 
   if (!currentUser && !phoneNumber) return <Login onPhoneSubmit={p => setPhoneNumber(p)} />
   if (!currentUser && phoneNumber) return <ProfileSetup phoneNumber={phoneNumber} onComplete={() => {}} />
-  if (currentUser && !currentUser.email_verified && !skipVerify) {
-    return <VerifyEmail onVerified={() => refreshProfile()} onSkip={() => setSkipVerify(true)} />
-  }
+  // if (currentUser && !currentUser.email_verified && !skipVerify) {
+  //   return <VerifyEmail onVerified={() => refreshProfile()} onSkip={() => setSkipVerify(true)} />
+  // }
   if (currentUser) return <Chat />
   return null
 }
