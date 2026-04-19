@@ -62,7 +62,6 @@ export default function ProfileSetup({ phoneNumber, onComplete }) {
   const { signup } = useAuth()
   const { showToast } = useToast()
   const [name, setName] = useState('')
-  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [photo, setPhoto] = useState(null)
   const [preview, setPreview] = useState(null)
@@ -79,12 +78,11 @@ export default function ProfileSetup({ phoneNumber, onComplete }) {
 
   const handleSubmit = async () => {
     if (!name.trim()) { setError('Enter your name'); return }
-    if (!email.trim()) { setError('Enter your email'); return }
     if (!password || password.length < 6) { setError('Password must be 6+ characters'); return }
     setLoading(true); setError('')
     try {
-      await signup({ email: email.trim(), password, name: name.trim(), phoneNumber })
-      showToast('Account created! Check your email for a verification code.', 'success', 5000)
+      await signup({ password, name: name.trim(), phoneNumber })
+      showToast('Account created! You can now sign in.', 'success', 5000)
       onComplete()
     } catch (e) {
       setError(e.message || 'Something went wrong. Try again.')
@@ -102,7 +100,7 @@ export default function ProfileSetup({ phoneNumber, onComplete }) {
       <div className="wa-center">
         <div className="wa-card">
           <h1>Profile info</h1>
-          <p className="subtitle">Provide your name, email and optional profile photo</p>
+          <p className="subtitle">Enter your name and create a password</p>
 
           <div className={'avatar-upload' + (preview ? ' has-photo' : '')} onClick={() => fileRef.current?.click()}>
             {preview ? <img src={preview} alt="" /> : (
@@ -126,10 +124,6 @@ export default function ProfileSetup({ phoneNumber, onComplete }) {
             <div className="char-count">{name.length}/25</div>
           </div>
           <div className="form-group">
-            <label>Email</label>
-            <input type="email" className="form-input" placeholder="your@email.com" value={email} onChange={e => { setEmail(e.target.value); setError('') }} />
-          </div>
-          <div className="form-group">
             <label>Create password</label>
             <PasswordInput value={password} onChange={e => { setPassword(e.target.value); setError('') }} placeholder="Min 6 characters" onKeyDown={e => e.key === 'Enter' && handleSubmit()} />
             <StrengthBar password={password} />
@@ -140,7 +134,7 @@ export default function ProfileSetup({ phoneNumber, onComplete }) {
           </div>
 
           {error && <p className="error-text">{error}</p>}
-          <button className="btn-primary" onClick={handleSubmit} disabled={loading || !name.trim() || !email.trim() || !password}>
+          <button className="btn-primary" onClick={handleSubmit} disabled={loading || !name.trim() || !password}>
             {loading ? 'Creating...' : 'Continue'}
           </button>
         </div>
