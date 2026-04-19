@@ -12,13 +12,18 @@ function fmtStatusTime(ts) { if (!ts) return ''; const d = new Date(ts); const d
 function fmtCallDuration(s) { const m = Math.floor(s / 60); const sec = s % 60; return `${m}:${sec < 10 ? '0' : ''}${sec}` }
 
 const STATUS_COLORS = ['#00a884', '#128c7e', '#075e54', '#25d366', '#1da1f2', '#e84393', '#6c5ce7', '#fd79a8', '#fdcb6e', '#e17055', '#d63031', '#636e72']
+const MEMBER_COLORS = ['#00a884', '#1da1f2', '#e84393', '#6c5ce7', '#fdcb6e', '#e17055', '#fd79a8', '#128c7e']
 const ICE_SERVERS = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }] }
 
-const Avatar = ({ src, size = 40, name = '' }) => (
+const Avatar = ({ src, size = 40, name = '', isGroup = false }) => (
   src ? <img src={src} alt="" referrerPolicy="no-referrer" style={{ width: size, height: size, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
-  : <div style={{ width: size, height: size, borderRadius: '50%', background: '#6b7b8a', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, color: '#dfe5e7', fontSize: size * 0.45, fontWeight: 600 }}>
-      {name ? name[0].toUpperCase() : <svg width={size*0.5} height={size*0.5} viewBox="0 0 24 24" fill="#dfe5e7"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>}
-    </div>
+  : isGroup
+    ? <div style={{ width: size, height: size, borderRadius: '50%', background: '#2a3942', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        <svg width={size * 0.55} height={size * 0.55} viewBox="0 0 24 24" fill="#aebac1"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      </div>
+    : <div style={{ width: size, height: size, borderRadius: '50%', background: '#6b7b8a', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, color: '#dfe5e7', fontSize: size * 0.45, fontWeight: 600 }}>
+        {name ? name[0].toUpperCase() : <svg width={size*0.5} height={size*0.5} viewBox="0 0 24 24" fill="#dfe5e7"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>}
+      </div>
 )
 
 const ChatSkeleton = () => (
@@ -85,6 +90,17 @@ export default function Chat() {
   const [callDuration, setCallDuration] = useState(0)
   const [isMuted, setIsMuted] = useState(false)
   const [isCameraOff, setIsCameraOff] = useState(false)
+
+  // ── Group creation state ──────────────────────────────────────────────────
+  const [showNewGroup, setShowNewGroup] = useState(false)
+  const [groupName, setGroupName] = useState('')
+  const [groupPhotoFile, setGroupPhotoFile] = useState(null)
+  const [groupPhotoPreview, setGroupPhotoPreview] = useState(null)
+  const [selectedMembers, setSelectedMembers] = useState([])
+  const [groupMemberSearch, setGroupMemberSearch] = useState('')
+  const [groupCreating, setGroupCreating] = useState(false)
+  const groupPhotoRef = useRef(null)
+
   const endRef = useRef(null)
   const textRef = useRef(null)
   const imgRef = useRef(null)
@@ -119,10 +135,16 @@ export default function Chat() {
     if (!chatRows) { setChats([]); setChatsLoading(false); return }
     const enriched = await Promise.all(chatRows.map(async (chat) => {
       const { data: participants } = await supabase.from('chat_participants').select('user_id').eq('chat_id', chat.id)
-      const otherUserId = participants?.find(p => p.user_id !== currentUser.id)?.user_id
-      let other = {}
-      if (otherUserId) { const { data: d } = await supabase.from('users').select('*').eq('id', otherUserId).single(); if (d) other = d }
-      return { ...chat, otherUser: other }
+      if (chat.is_group) {
+        const memberIds = participants?.map(p => p.user_id) || []
+        const { data: members } = await supabase.from('users').select('id, display_name, photo_url, about, phone_number').in('id', memberIds)
+        return { ...chat, groupMembers: members || [], otherUser: null }
+      } else {
+        const otherUserId = participants?.find(p => p.user_id !== currentUser.id)?.user_id
+        let other = {}
+        if (otherUserId) { const { data: d } = await supabase.from('users').select('*').eq('id', otherUserId).single(); if (d) other = d }
+        return { ...chat, otherUser: other, groupMembers: null }
+      }
     }))
     setChats(enriched)
     const counts = {}
@@ -155,12 +177,14 @@ export default function Chat() {
   }, [activeChat?.id, currentUser?.id, joinChat, loadMessages, scroll])
 
   useEffect(() => { const o1 = onMessage((d) => { if (d.chatId === activeChat?.id) scroll() }); const o2 = onNewChat(() => loadChats()); return () => { o1?.(); o2?.() } }, [activeChat?.id, onMessage, onNewChat, scroll, loadChats])
+
+  // Only subscribe to otherUser changes for 1-on-1 chats
   useEffect(() => {
-    if (!activeChat?.otherUser?.id) { setOtherUser(null); return }
+    if (!activeChat?.otherUser?.id || activeChat?.is_group) { setOtherUser(null); return }
     supabase.from('users').select('*').eq('id', activeChat.otherUser.id).single().then(({ data }) => { if (data) setOtherUser(data) })
     const ch = supabase.channel(`usr-${activeChat.otherUser.id}`).on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'users', filter: `id=eq.${activeChat.otherUser.id}` }, (p) => setOtherUser(p.new)).subscribe()
     return () => { supabase.removeChannel(ch) }
-  }, [activeChat?.otherUser?.id])
+  }, [activeChat?.otherUser?.id, activeChat?.is_group])
 
   const loadStatuses = useCallback(async () => {
     if (!currentUser?.id) return
@@ -181,21 +205,62 @@ export default function Chat() {
   const handleSend = async () => {
     if (previewFile) { await handleSendFile(); return }
     if (!text.trim() || !activeChat?.id) return
-    const msg = text.trim(); setText(''); if (textRef.current) textRef.current.style.height = 'auto'; stopTyping(activeChat.id, currentUser.id)
+    const msg = text.trim(); setText(''); if (textRef.current) textRef.current.style.height = 'auto'
+    if (!activeChat.is_group) stopTyping(activeChat.id, currentUser.id)
     const { data: newMsg } = await supabase.from('messages').insert({ chat_id: activeChat.id, sender_id: currentUser.id, text: msg, type: 'text', read: false }).select().single()
-    if (newMsg) socketSend({ chatId: activeChat.id, id: newMsg.id, ...newMsg, senderName: userProfile?.display_name, recipientId: activeChat.otherUser?.id })
+    if (newMsg && !activeChat.is_group) socketSend({ chatId: activeChat.id, id: newMsg.id, ...newMsg, senderName: userProfile?.display_name, recipientId: activeChat.otherUser?.id })
     await supabase.from('chats').update({ last_message_text: msg, last_message_sender: currentUser.id, last_message_type: 'text', last_message_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', activeChat.id)
   }
+
   const handleSendFile = async () => {
     if (!previewFile || !activeChat?.id) return; setUploading(true)
     try {
       const { file, type } = previewFile; const fp = `${activeChat.id}/${Date.now()}_${file.name}`
       const { error: ue } = await supabase.storage.from('chat-files').upload(fp, file); if (ue) throw ue
-      const { data: u } = supabase.storage.from('chat-files').getPublicUrl(fp); const pvw = type === 'image' ? 'Photo' : file.name
+      const { data: u } = supabase.storage.from('chat-files').getPublicUrl(fp)
       await supabase.from('messages').insert({ chat_id: activeChat.id, sender_id: currentUser.id, text: text.trim() || null, type, file_url: u.publicUrl, file_name: file.name, file_size: file.size, read: false })
       await supabase.from('chats').update({ last_message_text: type === 'image' ? 'Photo' : `${file.name}`, last_message_sender: currentUser.id, last_message_type: type, last_message_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', activeChat.id)
       setPreviewFile(null); setText('')
     } catch (e) { console.error('Upload error:', e) } finally { setUploading(false) }
+  }
+
+  // ── Group creation ────────────────────────────────────────────────────────
+  const openNewGroup = async () => {
+    setShowNewGroup(true)
+    setGroupName(''); setGroupPhotoFile(null); setGroupPhotoPreview(null); setSelectedMembers([]); setGroupMemberSearch('')
+    const { data } = await supabase.from('users').select('id, display_name, photo_url, phone_number').neq('id', currentUser.id).order('display_name')
+    setAllUsers(data || [])
+  }
+
+  const toggleMember = (uid) => {
+    setSelectedMembers(prev => prev.includes(uid) ? prev.filter(id => id !== uid) : [...prev, uid])
+  }
+
+  const handleGroupPhoto = (e) => {
+    const f = e.target.files?.[0]; if (!f) return
+    if (f.size > 5 * 1024 * 1024) { showToast('Image must be under 5MB', 'error'); return }
+    setGroupPhotoFile(f); setGroupPhotoPreview(URL.createObjectURL(f))
+  }
+
+  const handleCreateGroup = async () => {
+    if (!groupName.trim()) { showToast('Enter a group name', 'error'); return }
+    if (selectedMembers.length < 1) { showToast('Add at least 1 member', 'error'); return }
+    setGroupCreating(true)
+    try {
+      const chatId = `group_${Date.now()}_${currentUser.id}`
+      let photoUrl = ''
+      if (groupPhotoFile) {
+        const fp = `groups/${chatId}`
+        const { error: ue } = await supabase.storage.from('chat-files').upload(fp, groupPhotoFile, { upsert: true })
+        if (!ue) { const { data: u } = supabase.storage.from('chat-files').getPublicUrl(fp); photoUrl = u.publicUrl }
+      }
+      await supabase.from('chats').insert({ id: chatId, is_group: true, group_name: groupName.trim(), group_photo_url: photoUrl, created_by: currentUser.id, updated_at: new Date().toISOString() })
+      const allParticipants = [currentUser.id, ...selectedMembers].map(uid => ({ chat_id: chatId, user_id: uid }))
+      await supabase.from('chat_participants').insert(allParticipants)
+      setShowNewGroup(false); loadChats()
+      showToast(`Group "${groupName.trim()}" created!`, 'success')
+    } catch (e) { showToast('Failed to create group', 'error'); console.error(e) }
+    finally { setGroupCreating(false) }
   }
 
   const openProfileEdit = () => { setEditName(userProfile?.display_name || ''); setEditAbout(userProfile?.about || ''); setEditPhotoFile(null); setEditPhotoPreview(null); setShowProfileEdit(true) }
@@ -247,7 +312,7 @@ export default function Chat() {
 
   const drainIceCandidateQueue = async () => { const pc = peerConnection.current; if (!pc) return; while (iceCandidateQueue.current.length > 0) { const c = iceCandidateQueue.current.shift(); try { await pc.addIceCandidate(new RTCIceCandidate(c)) } catch {} } }
   const startCall = useCallback(async (type) => {
-    if (!activeChat?.otherUser?.id || callState) return
+    if (!activeChat?.otherUser?.id || activeChat?.is_group || callState) return
     const peer = { id: activeChat.otherUser.id, name: activeChat.otherUser.display_name, photo: activeChat.otherUser.photo_url }
     setCallPeer(peer); setCallType(type); setCallState('calling')
     initiateCall({ callerId: currentUser.id, callerName: userProfile?.display_name, callerPhoto: userProfile?.photo_url, recipientId: peer.id, callType: type })
@@ -284,17 +349,28 @@ export default function Chat() {
     if (!ex) { await supabase.from('chats').insert({ id: chatId, updated_at: new Date().toISOString() }); await supabase.from('chat_participants').insert([{ chat_id: chatId, user_id: currentUser.id }, { chat_id: chatId, user_id: user.id }]) }
     setActiveChat({ id: chatId, otherUser: user }); setShowNewChat(false); setNewChatSearch(''); setShowMobileChat(true); setActiveTab('chats')
   }
-  const handleTyping = () => { startTyping(activeChat?.id, currentUser.id, userProfile?.display_name); clearTimeout(typingTimer.current); typingTimer.current = setTimeout(() => stopTyping(activeChat?.id, currentUser.id), 2000) }
+  const handleTyping = () => { if (activeChat?.is_group) return; startTyping(activeChat?.id, currentUser.id, userProfile?.display_name); clearTimeout(typingTimer.current); typingTimer.current = setTimeout(() => stopTyping(activeChat?.id, currentUser.id), 2000) }
   const handleFileSelect = (e, type) => { const f = e.target.files?.[0]; if (f) { setPreviewFile({ file: f, type }); setShowAttach(false) } e.target.value = '' }
 
-  const filteredChats = chats.filter(c => !search || c.otherUser?.display_name?.toLowerCase().includes(search.toLowerCase()))
-  const filteredUsers = allUsers.filter(u => !newChatSearch || u.display_name?.toLowerCase().includes(newChatSearch.toLowerCase()) || u.phone_number?.includes(newChatSearch) || u.email?.toLowerCase().includes(newChatSearch.toLowerCase()))
+  const filteredChats = chats.filter(c => !search || (c.is_group ? c.group_name?.toLowerCase().includes(search.toLowerCase()) : c.otherUser?.display_name?.toLowerCase().includes(search.toLowerCase())))
+  const filteredUsers = allUsers.filter(u => !newChatSearch || u.display_name?.toLowerCase().includes(newChatSearch.toLowerCase()) || u.phone_number?.includes(newChatSearch))
+  const filteredGroupUsers = allUsers.filter(u => !groupMemberSearch || u.display_name?.toLowerCase().includes(groupMemberSearch.toLowerCase()) || u.phone_number?.includes(groupMemberSearch))
 
   const grouped = []; let lastDate = ''
   messages.forEach((msg, i) => { const d = fmtDate(msg.created_at); if (d && d !== lastDate) { grouped.push({ type: 'date', date: d }); lastDate = d }; grouped.push({ type: 'msg', msg, tail: !messages[i - 1] || messages[i - 1].sender_id !== msg.sender_id }) })
   const displayGrouped = !msgSearch ? grouped : grouped.filter(item => item.type !== 'date' && item.msg?.text?.toLowerCase().includes(msgSearch.toLowerCase()))
   const isOnline = (uid) => onlineUsers.includes(uid)
-  const getTyping = () => { if (!activeChat?.otherUser?.id) return null; return typingUsers[activeChat.otherUser.id] }
+  const getTyping = () => { if (!activeChat?.otherUser?.id || activeChat?.is_group) return null; return typingUsers[activeChat.otherUser.id] }
+
+  // Build sender map for group messages
+  const senderMap = {}
+  if (activeChat?.is_group && activeChat?.groupMembers) {
+    activeChat.groupMembers.forEach((m, i) => { senderMap[m.id] = { ...m, color: MEMBER_COLORS[i % MEMBER_COLORS.length] } })
+  }
+
+  // Chat display helpers
+  const getChatName = (chat) => chat.is_group ? (chat.group_name || 'Group') : (chat.otherUser?.display_name || 'Unknown')
+  const getChatPhoto = (chat) => chat.is_group ? chat.group_photo_url : chat.otherUser?.photo_url
 
   return (
     <div className="app-container" onClick={() => contextMenu && setContextMenu(null)}>
@@ -314,28 +390,99 @@ export default function Chat() {
 
         <div className={'sidebar' + (showMobileChat ? ' mobile-hidden' : '')}>
           {activeTab === 'chats' && (<>
-            {showNewChat && (<div className="new-chat-overlay"><div className="new-chat-header"><button onClick={() => setShowNewChat(false)}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg></button><h2>New chat</h2></div><div className="sidebar-search"><div className="search-box"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#8696a0" strokeWidth="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input className="search-input" placeholder="Search name, phone or email" value={newChatSearch} onChange={e => setNewChatSearch(e.target.value)} autoFocus /></div></div><div className="user-list">{filteredUsers.length === 0 ? <div className="chat-list-empty">{newChatSearch ? 'No users found' : 'No other users yet.'}</div> : filteredUsers.map(u => (<div key={u.id} className="user-item" onClick={() => handleSelectUser(u)}><div style={{ position: 'relative' }}><Avatar src={u.photo_url} size={49} name={u.display_name} />{isOnline(u.id) && <div className="online-dot" />}</div><div className="user-item-info"><div className="user-item-name">{u.display_name}</div><div className="user-item-about">{u.about || u.phone_number || u.email}</div></div></div>))}</div></div>)}
-            <div className="sidebar-header"><div className="sidebar-header-left"><span style={{ color: '#e9edef', fontSize: 20, fontWeight: 600 }}>Chats</span></div><div className="sidebar-header-right"><button className="icon-btn" onClick={handleNewChat} title="New chat"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg></button><button className="icon-btn desktop-logout" onClick={logout} title="Logout"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg></button></div></div>
+            {/* ── New Chat overlay ── */}
+            {showNewChat && (<div className="new-chat-overlay"><div className="new-chat-header"><button onClick={() => setShowNewChat(false)}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg></button><h2>New chat</h2></div><div className="sidebar-search"><div className="search-box"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#8696a0" strokeWidth="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input className="search-input" placeholder="Search name or phone" value={newChatSearch} onChange={e => setNewChatSearch(e.target.value)} autoFocus /></div></div><div className="user-list">{filteredUsers.length === 0 ? <div className="chat-list-empty">{newChatSearch ? 'No users found' : 'No other users yet.'}</div> : filteredUsers.map(u => (<div key={u.id} className="user-item" onClick={() => handleSelectUser(u)}><div style={{ position: 'relative' }}><Avatar src={u.photo_url} size={49} name={u.display_name} />{isOnline(u.id) && <div className="online-dot" />}</div><div className="user-item-info"><div className="user-item-name">{u.display_name}</div><div className="user-item-about">{u.about || u.phone_number}</div></div></div>))}</div></div>)}
+
+            {/* ── New Group overlay ── */}
+            {showNewGroup && (
+              <div className="new-chat-overlay">
+                <div className="new-chat-header">
+                  <button onClick={() => setShowNewGroup(false)}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg></button>
+                  <h2>New group</h2>
+                </div>
+                {/* Group photo + name */}
+                <div style={{ padding: '16px', borderBottom: '1px solid #2a3942' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 14 }}>
+                    <div onClick={() => groupPhotoRef.current?.click()} style={{ width: 56, height: 56, borderRadius: '50%', background: '#2a3942', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', overflow: 'hidden', flexShrink: 0, position: 'relative' }}>
+                      {groupPhotoPreview ? <img src={groupPhotoPreview} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#aebac1" strokeWidth="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>}
+                      <input ref={groupPhotoRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleGroupPhoto} />
+                    </div>
+                    <input className="search-input" style={{ flex: 1, padding: '8px 0', borderBottom: '2px solid #00a884', background: 'none', fontSize: 16, color: '#e9edef' }} placeholder="Group name" value={groupName} onChange={e => setGroupName(e.target.value)} autoFocus maxLength={50} />
+                  </div>
+                  {selectedMembers.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      {selectedMembers.map(uid => { const u = allUsers.find(x => x.id === uid); return u ? <span key={uid} style={{ background: '#00a884', color: '#fff', borderRadius: 16, padding: '3px 10px', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>{u.display_name}<button onClick={() => toggleMember(uid)} style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer', padding: 0, fontSize: 14, lineHeight: 1 }}>×</button></span> : null })}
+                    </div>
+                  )}
+                </div>
+                <div className="sidebar-search"><div className="search-box"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#8696a0" strokeWidth="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input className="search-input" placeholder="Add members" value={groupMemberSearch} onChange={e => setGroupMemberSearch(e.target.value)} /></div></div>
+                <div className="user-list">
+                  {filteredGroupUsers.map(u => (
+                    <div key={u.id} className="user-item" onClick={() => toggleMember(u.id)} style={{ background: selectedMembers.includes(u.id) ? '#182229' : undefined }}>
+                      <div style={{ position: 'relative' }}>
+                        <Avatar src={u.photo_url} size={49} name={u.display_name} />
+                        {selectedMembers.includes(u.id) && <div style={{ position: 'absolute', bottom: 0, right: 0, width: 18, height: 18, background: '#00a884', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg></div>}
+                      </div>
+                      <div className="user-item-info"><div className="user-item-name">{u.display_name}</div><div className="user-item-about">{u.phone_number}</div></div>
+                    </div>
+                  ))}
+                </div>
+                {selectedMembers.length > 0 && groupName.trim() && (
+                  <div style={{ padding: 16, borderTop: '1px solid #2a3942' }}>
+                    <button className="btn-primary" onClick={handleCreateGroup} disabled={groupCreating} style={{ width: '100%' }}>
+                      {groupCreating ? 'Creating...' : `Create group · ${selectedMembers.length + 1} members`}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="sidebar-header">
+              <div className="sidebar-header-left"><span style={{ color: '#e9edef', fontSize: 20, fontWeight: 600 }}>Chats</span></div>
+              <div className="sidebar-header-right">
+                {/* New Group button */}
+                <button className="icon-btn" onClick={openNewGroup} title="New group" style={{ marginRight: 2 }}>
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
+                </button>
+                <button className="icon-btn" onClick={handleNewChat} title="New chat"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg></button>
+                <button className="icon-btn desktop-logout" onClick={logout} title="Logout"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg></button>
+              </div>
+            </div>
             <div className="sidebar-search"><div className="search-box"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#8696a0" strokeWidth="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input className="search-input" placeholder="Search or start a new chat" value={search} onChange={e => setSearch(e.target.value)} /></div></div>
             <div className="chat-list">
               {chatsLoading ? [1,2,3,4,5].map(i => <ChatSkeleton key={i} />) : filteredChats.length === 0 ? (
                 <div className="chat-list-empty"><div style={{ textAlign: 'center' }}><p>{search ? 'No chats found' : 'No conversations yet'}</p>{!search && <button className="btn-primary" style={{ marginTop: 16, fontSize: 13, padding: '8px 20px' }} onClick={handleNewChat}>+ Start a chat</button>}</div></div>
               ) : filteredChats.map(chat => {
                 const isOwn = chat.last_message_sender === currentUser.id
-                const preview = !chat.last_message_text ? '' : chat.last_message_type === 'image' ? 'Photo' : chat.last_message_type === 'document' ? 'Document' : chat.last_message_text || ''
+                const preview = !chat.last_message_text ? '' : chat.last_message_type === 'image' ? '📷 Photo' : chat.last_message_type === 'document' ? '📄 Document' : chat.last_message_text || ''
                 const unread = unreadCounts[chat.id] || 0
+                const chatName = getChatName(chat)
+                const chatPhoto = getChatPhoto(chat)
                 return (
                   <div key={chat.id} className={'chat-item' + (activeChat?.id === chat.id ? ' active' : '')} onClick={() => { setActiveChat(chat); setShowMobileChat(true); setShowContactInfo(false); setUnreadCounts(prev => ({ ...prev, [chat.id]: 0 })) }}>
-                    <div style={{ position: 'relative' }}><Avatar src={chat.otherUser?.photo_url} size={49} name={chat.otherUser?.display_name} />{isOnline(chat.otherUser?.id) && <div className="online-dot" />}</div>
+                    <div style={{ position: 'relative' }}>
+                      <Avatar src={chatPhoto} size={49} name={chatName} isGroup={chat.is_group} />
+                      {!chat.is_group && isOnline(chat.otherUser?.id) && <div className="online-dot" />}
+                    </div>
                     <div className="chat-info">
-                      <div className="chat-info-top"><span className="chat-name">{chat.otherUser?.display_name || 'Unknown'}</span><span className="chat-time" style={{ color: unread > 0 ? '#00a884' : undefined }}>{fmtChatTime(chat.last_message_at)}</span></div>
-                      <div className="chat-info-bottom"><span className="chat-preview">{isOwn && !unread && <span className="ticks">✓✓ </span>}{preview.length > 40 ? preview.slice(0, 40) + '\u2026' : preview}</span>{unread > 0 && <span className="unread-badge">{unread > 99 ? '99+' : unread}</span>}</div>
+                      <div className="chat-info-top">
+                        <span className="chat-name" style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                          {chat.is_group && <svg width="13" height="13" viewBox="0 0 24 24" fill="#aebac1"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>}
+                          {chatName}
+                        </span>
+                        <span className="chat-time" style={{ color: unread > 0 ? '#00a884' : undefined }}>{fmtChatTime(chat.last_message_at)}</span>
+                      </div>
+                      <div className="chat-info-bottom">
+                        <span className="chat-preview">{isOwn && !unread && <span className="ticks">✓✓ </span>}{preview.length > 40 ? preview.slice(0, 40) + '\u2026' : preview}</span>
+                        {unread > 0 && <span className="unread-badge">{unread > 99 ? '99+' : unread}</span>}
+                      </div>
                     </div>
                   </div>
                 )
               })}
             </div>
           </>)}
+
           {activeTab === 'status' && (<>
             <div className="sidebar-header"><div className="sidebar-header-left"><span style={{ color: '#e9edef', fontSize: 20, fontWeight: 600 }}>Status</span></div><div className="sidebar-header-right"><button className="icon-btn" onClick={() => setShowStatusComposer(true)} title="New status"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button></div></div>
             <div className="status-list">
@@ -344,7 +491,9 @@ export default function Chat() {
               {statuses.length === 0 && myStatuses.length === 0 && <div className="chat-list-empty"><div style={{ textAlign: 'center' }}><p>No status updates yet</p><button className="btn-primary" style={{ marginTop: 16, fontSize: 13, padding: '8px 20px' }} onClick={() => setShowStatusComposer(true)}>+ Add status</button></div></div>}
             </div>
           </>)}
+
           {activeTab === 'channels' && (<><div className="sidebar-header"><div className="sidebar-header-left"><span style={{ color: '#e9edef', fontSize: 20, fontWeight: 600 }}>Communities</span></div></div><div className="chat-list-empty"><div style={{ textAlign: 'center' }}><svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="#374955" strokeWidth="1.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><p style={{ marginTop: 16 }}>Communities coming soon</p></div></div></>)}
+
           {activeTab === 'settings' && (<>
             <div className="sidebar-header"><div className="sidebar-header-left"><span style={{ color: '#e9edef', fontSize: 20, fontWeight: 600 }}>Settings</span></div></div>
             <div className="settings-panel">
@@ -368,6 +517,7 @@ export default function Chat() {
           </>)}
         </div>
 
+        {/* ── Chat Area ── */}
         <div className={'chat-area' + (showContactInfo ? ' with-contact-info' : '') + (showMobileChat ? ' mobile-visible' : '')}>
           {!activeChat ? (
             <div className="chat-empty"><svg width="250" height="180" viewBox="0 0 300 200" fill="none"><circle cx="150" cy="100" r="80" fill="#182229"/><rect x="115" y="45" width="70" height="110" rx="12" fill="#202c33" stroke="#2a3942" strokeWidth="2"/><rect x="124" y="58" width="52" height="72" rx="4" fill="#0b141a"/><circle cx="150" cy="142" r="5" fill="#2a3942"/></svg><h2>WhatsApp Web</h2><p>Send and receive messages without keeping your phone online.</p><div className="encrypt-text"><svg width="14" height="14" viewBox="0 0 24 24" fill="#667781"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>End-to-end encrypted</div></div>
@@ -375,16 +525,22 @@ export default function Chat() {
             <div className="chat-header">
               <button className="icon-btn back-btn" onClick={() => { setShowMobileChat(false); setActiveChat(null); setShowContactInfo(false) }}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg></button>
               <div className="chat-header-clickable" onClick={() => setShowContactInfo(!showContactInfo)}>
-                <Avatar src={activeChat.otherUser?.photo_url} size={40} name={activeChat.otherUser?.display_name} />
+                <Avatar src={getChatPhoto(activeChat)} size={40} name={getChatName(activeChat)} isGroup={activeChat.is_group} />
                 <div className="chat-header-info">
-                  <div className="chat-header-name">{activeChat.otherUser?.display_name}</div>
-                  <div className={'chat-header-status' + (isOnline(activeChat.otherUser?.id) ? ' online' : '') + (getTyping() ? ' typing' : '')}>{getTyping() ? 'typing...' : isOnline(activeChat.otherUser?.id) ? 'online' : otherUser?.last_seen ? 'last seen ' + fmtTime(otherUser.last_seen) : ''}</div>
+                  <div className="chat-header-name">{getChatName(activeChat)}</div>
+                  {activeChat.is_group ? (
+                    <div className="chat-header-status">{activeChat.groupMembers?.length || 0} members</div>
+                  ) : (
+                    <div className={'chat-header-status' + (isOnline(activeChat.otherUser?.id) ? ' online' : '') + (getTyping() ? ' typing' : '')}>{getTyping() ? 'typing...' : isOnline(activeChat.otherUser?.id) ? 'online' : otherUser?.last_seen ? 'last seen ' + fmtTime(otherUser.last_seen) : ''}</div>
+                  )}
                 </div>
               </div>
               <div className="chat-header-actions">
                 <button className={'icon-btn' + (showMsgSearch ? ' active-icon' : '')} title="Search messages" onClick={() => { setShowMsgSearch(s => !s); if (showMsgSearch) setMsgSearch('') }}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></button>
-                <button className="icon-btn" title="Video call" onClick={() => startCall('video')}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg></button>
-                <button className="icon-btn" title="Voice call" onClick={() => startCall('audio')}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></button>
+                {!activeChat.is_group && <>
+                  <button className="icon-btn" title="Video call" onClick={() => startCall('video')}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg></button>
+                  <button className="icon-btn" title="Voice call" onClick={() => startCall('audio')}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></button>
+                </>}
                 <button className="icon-btn"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg></button>
               </div>
             </div>
@@ -405,9 +561,23 @@ export default function Chat() {
                 if (item.type === 'date') return <div key={'d'+i} className="date-divider"><span>{item.date}</span></div>
                 const { msg, tail } = item; const own = msg.sender_id === currentUser.id
                 const highlighted = msgSearch && msg.text?.toLowerCase().includes(msgSearch.toLowerCase())
+                const sender = senderMap[msg.sender_id]
                 return (
                   <div key={msg.id} className={'msg-row ' + (own ? 'out' : 'in')} onContextMenu={(e) => handleMsgContextMenu(e, msg)}>
+                    {/* Group: show sender avatar on left */}
+                    {activeChat.is_group && !own && tail && (
+                      <div style={{ alignSelf: 'flex-end', marginRight: 6, marginBottom: 4, flexShrink: 0 }}>
+                        <Avatar src={sender?.photo_url} size={28} name={sender?.display_name} />
+                      </div>
+                    )}
+                    {activeChat.is_group && !own && !tail && <div style={{ width: 34, flexShrink: 0 }} />}
                     <div className={'msg-bubble ' + (own ? 'out' : 'in') + (tail ? ' tail' : '') + (highlighted ? ' msg-highlighted' : '')}>
+                      {/* Group: show sender name */}
+                      {activeChat.is_group && !own && tail && (
+                        <div style={{ color: sender?.color || '#00a884', fontSize: 12, fontWeight: 600, marginBottom: 3 }}>
+                          {sender?.display_name || 'Unknown'}
+                        </div>
+                      )}
                       {msg.type === 'image' && msg.file_url && <img className="msg-image" src={msg.file_url} alt="" onClick={() => window.open(msg.file_url)} />}
                       {msg.type === 'document' && msg.file_url && <a className="msg-doc" href={msg.file_url} target="_blank" rel="noopener noreferrer"><span style={{ fontSize: 24 }}>📄</span><div style={{ flex: 1, minWidth: 0 }}><div className="msg-doc-name">{msg.file_name}</div><div style={{ color: '#8696a0', fontSize: 12 }}>{msg.file_size ? (msg.file_size/1024).toFixed(1)+' KB' : ''}</div></div></a>}
                       {msg.text && <span className="msg-text">{msg.text}</span>}
@@ -432,13 +602,57 @@ export default function Chat() {
           </>)}
         </div>
 
-        {showContactInfo && activeChat?.otherUser && (
+        {/* ── Contact / Group Info Panel ── */}
+        {showContactInfo && activeChat && (
           <div className="contact-info-panel">
-            <div className="contact-info-header"><button className="icon-btn" onClick={() => setShowContactInfo(false)}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button><span>Contact info</span></div>
+            <div className="contact-info-header">
+              <button className="icon-btn" onClick={() => setShowContactInfo(false)}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+              <span>{activeChat.is_group ? 'Group info' : 'Contact info'}</span>
+            </div>
             <div className="contact-info-body">
-              <div className="contact-info-avatar-section"><Avatar src={activeChat.otherUser?.photo_url} size={200} name={activeChat.otherUser?.display_name} /><h2>{activeChat.otherUser?.display_name}</h2><p className="contact-info-phone">{otherUser?.phone_number || activeChat.otherUser?.phone_number || activeChat.otherUser?.email}</p></div>
-              <div className="contact-info-section"><label>About</label><p>{otherUser?.about || activeChat.otherUser?.about || 'Hey there! I am using WhatsApp.'}</p></div>
-              <div className="contact-info-section"><div className="contact-info-section-header"><span>Media, links and docs</span><span className="contact-info-count">{contactMedia.length}</span></div>{contactMedia.length > 0 ? <div className="contact-media-grid">{contactMedia.filter(m => m.type === 'image').slice(0, 6).map(m => <img key={m.id} src={m.file_url} alt="" className="contact-media-thumb" onClick={() => window.open(m.file_url)} />)}</div> : <p className="contact-info-empty">No media shared yet</p>}</div>
+              {activeChat.is_group ? (
+                <>
+                  <div className="contact-info-avatar-section">
+                    <Avatar src={activeChat.group_photo_url} size={200} name={activeChat.group_name} isGroup />
+                    <h2>{activeChat.group_name}</h2>
+                    <p className="contact-info-phone">Group · {activeChat.groupMembers?.length || 0} members</p>
+                  </div>
+                  <div className="contact-info-section">
+                    <label>Members</label>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+                      {(activeChat.groupMembers || []).map((member, i) => (
+                        <div key={member.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <div style={{ position: 'relative' }}>
+                            <Avatar src={member.photo_url} size={38} name={member.display_name} />
+                            {isOnline(member.id) && <div className="online-dot" style={{ width: 10, height: 10 }} />}
+                          </div>
+                          <div>
+                            <div style={{ color: '#e9edef', fontSize: 14, fontWeight: 500 }}>
+                              {member.id === currentUser.id ? 'You' : member.display_name}
+                              {member.id === activeChat.created_by && <span style={{ color: '#00a884', fontSize: 11, marginLeft: 6 }}>Admin</span>}
+                            </div>
+                            <div style={{ color: '#8696a0', fontSize: 12 }}>{member.about || member.phone_number}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="contact-info-section">
+                    <div className="contact-info-section-header"><span>Media, links and docs</span><span className="contact-info-count">{contactMedia.length}</span></div>
+                    {contactMedia.length > 0 ? <div className="contact-media-grid">{contactMedia.filter(m => m.type === 'image').slice(0, 6).map(m => <img key={m.id} src={m.file_url} alt="" className="contact-media-thumb" onClick={() => window.open(m.file_url)} />)}</div> : <p className="contact-info-empty">No media shared yet</p>}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="contact-info-avatar-section">
+                    <Avatar src={activeChat.otherUser?.photo_url} size={200} name={activeChat.otherUser?.display_name} />
+                    <h2>{activeChat.otherUser?.display_name}</h2>
+                    <p className="contact-info-phone">{otherUser?.phone_number || activeChat.otherUser?.phone_number}</p>
+                  </div>
+                  <div className="contact-info-section"><label>About</label><p>{otherUser?.about || activeChat.otherUser?.about || 'Hey there! I am using WhatsApp.'}</p></div>
+                  <div className="contact-info-section"><div className="contact-info-section-header"><span>Media, links and docs</span><span className="contact-info-count">{contactMedia.length}</span></div>{contactMedia.length > 0 ? <div className="contact-media-grid">{contactMedia.filter(m => m.type === 'image').slice(0, 6).map(m => <img key={m.id} src={m.file_url} alt="" className="contact-media-thumb" onClick={() => window.open(m.file_url)} />)}</div> : <p className="contact-info-empty">No media shared yet</p>}</div>
+                </>
+              )}
             </div>
           </div>
         )}
