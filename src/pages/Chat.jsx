@@ -718,10 +718,8 @@ export default function Chat() {
               </div>
               <div className="chat-header-actions">
                 <button className={'icon-btn' + (showMsgSearch ? ' active-icon' : '')} title="Search messages" onClick={() => { const next = !showMsgSearch; setShowMsgSearch(next); if (!next) setMsgSearch('') }}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></button>
-                {!activeChat.is_group && <>
-                  <button className="icon-btn" title="Video call" onClick={() => startCall('video')}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg></button>
-                  <button className="icon-btn" title="Voice call" onClick={() => startCall('audio')}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></button>
-                </>}
+                <button className="icon-btn" title="Video call" onClick={() => startCall('video')}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg></button>
+                <button className="icon-btn" title="Voice call" onClick={() => startCall('audio')}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></button>
                 <button className="icon-btn"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg></button>
               </div>
             </div>
@@ -824,7 +822,7 @@ export default function Chat() {
                     <div style={{ position: 'relative', cursor: activeChat.created_by === currentUser.id ? 'pointer' : 'default' }}
                       onClick={() => activeChat.created_by === currentUser.id && groupInfoPhotoRef.current?.click()}>
                       <Avatar src={activeChat.group_photo_url} size={110} name={activeChat.group_name} isGroup />
-                      {activeChat.created_by === currentUser.id && (
+                      {(!activeChat.created_by || activeChat.created_by === currentUser.id) && (
                         <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', background: 'rgba(0,0,0,0.45)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2 }}>
                           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
                           <span style={{ color: '#fff', fontSize: 10 }}>Change</span>
@@ -847,7 +845,7 @@ export default function Chat() {
                     ) : (
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
                         <h2 style={{ margin: 0 }}>{activeChat.group_name}</h2>
-                        {activeChat.created_by === currentUser.id && (
+                        {(!activeChat.created_by || activeChat.created_by === currentUser.id) && (
                           <button onClick={() => { setNewGroupName(activeChat.group_name || ''); setEditingGroupName(true) }}
                             style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#8696a0', padding: 4 }}>
                             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
@@ -865,7 +863,7 @@ export default function Chat() {
                       {(activeChat.groupMembers || []).map(member => {
                         const isAdmin = member.id === activeChat.created_by
                         const isSelf = member.id === currentUser.id
-                        const amAdmin = activeChat.created_by === currentUser.id
+                        const amAdmin = !activeChat.created_by || activeChat.created_by === currentUser.id
                         return (
                           <div key={member.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid #2a3942' }}>
                             <div style={{ position: 'relative' }}>
