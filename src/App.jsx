@@ -2,13 +2,11 @@ import { useState } from 'react'
 import { useAuth } from './context/AuthContext'
 import Login from './pages/Login'
 import ProfileSetup from './pages/ProfileSetup'
-import VerifyEmail from './pages/VerifyEmail'
 import Chat from './pages/Chat'
 
 export default function App() {
-  const { currentUser, loading, refreshProfile, logout } = useAuth()
+  const { currentUser, loading } = useAuth()
   const [phoneNumber, setPhoneNumber] = useState(null)
-  const [skipVerify, setSkipVerify] = useState(false)
 
   if (loading) return (
     <div className="loading-page">
@@ -21,9 +19,6 @@ export default function App() {
 
   if (!currentUser && !phoneNumber) return <Login onPhoneSubmit={p => setPhoneNumber(p)} />
   if (!currentUser && phoneNumber) return <ProfileSetup phoneNumber={phoneNumber} onComplete={() => {}} />
-  // if (currentUser && !currentUser.email_verified && !skipVerify) {
-  //   return <VerifyEmail onVerified={() => refreshProfile()} onSkip={() => setSkipVerify(true)} />
-  // }
   if (currentUser) return <Chat />
   return null
 }
