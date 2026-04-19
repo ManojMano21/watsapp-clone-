@@ -207,8 +207,18 @@ export default function Chat() {
     if (!text.trim() || !activeChat?.id) return
     const msg = text.trim(); setText(''); if (textRef.current) textRef.current.style.height = 'auto'
     if (!activeChat.is_group) stopTyping(activeChat.id, currentUser.id)
+
+    // Show message immediately — don't wait for realtime
+    const tempId = `temp_${Date.now()}`
+    const tempMsg = { id: tempId, chat_id: activeChat.id, sender_id: currentUser.id, text: msg, type: 'text', read: false, created_at: new Date().toISOString() }
+    setMessages(prev => [...prev, tempMsg])
+    scroll()
+
     const { data: newMsg } = await supabase.from('messages').insert({ chat_id: activeChat.id, sender_id: currentUser.id, text: msg, type: 'text', read: false }).select().single()
-    if (newMsg && !activeChat.is_group) socketSend({ chatId: activeChat.id, id: newMsg.id, ...newMsg, senderName: userProfile?.display_name, recipientId: activeChat.otherUser?.id })
+    if (newMsg) {
+      setMessages(prev => prev.map(m => m.id === tempId ? newMsg : m))
+      if (!activeChat.is_group) socketSend({ chatId: activeChat.id, id: newMsg.id, ...newMsg, senderName: userProfile?.display_name, recipientId: activeChat.otherUser?.id })
+    }
     await supabase.from('chats').update({ last_message_text: msg, last_message_sender: currentUser.id, last_message_type: 'text', last_message_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', activeChat.id)
   }
 
@@ -218,7 +228,9 @@ export default function Chat() {
       const { file, type } = previewFile; const fp = `${activeChat.id}/${Date.now()}_${file.name}`
       const { error: ue } = await supabase.storage.from('chat-files').upload(fp, file); if (ue) throw ue
       const { data: u } = supabase.storage.from('chat-files').getPublicUrl(fp)
-      await supabase.from('messages').insert({ chat_id: activeChat.id, sender_id: currentUser.id, text: text.trim() || null, type, file_url: u.publicUrl, file_name: file.name, file_size: file.size, read: false })
+      const { data: newMsg } = await supabase.from('messages').insert({ chat_id: activeChat.id, sender_id: currentUser.id, text: text.trim() || null, type, file_url: u.publicUrl, file_name: file.name, file_size: file.size, read: false }).select().single()
+      if (newMsg) setMessages(prev => prev.find(m => m.id === newMsg.id) ? prev : [...prev, newMsg])
+      scroll()
       await supabase.from('chats').update({ last_message_text: type === 'image' ? 'Photo' : `${file.name}`, last_message_sender: currentUser.id, last_message_type: type, last_message_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', activeChat.id)
       setPreviewFile(null); setText('')
     } catch (e) { console.error('Upload error:', e) } finally { setUploading(false) }
