@@ -25,7 +25,12 @@ export function useSocket(user) {
   useEffect(() => {
     if (!user?.id) return
 
-    const socket = io(SOCKET_URL, { transports: ['websocket', 'polling'] })
+    const socket = io(SOCKET_URL, {
+  transports: ['websocket', 'polling'],
+  reconnectionAttempts: 5,
+  reconnectionDelay: 3000,
+  timeout: 10000,
+})
     socketRef.current = socket
 
     socket.on('connect', () => {
