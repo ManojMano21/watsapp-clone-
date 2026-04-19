@@ -427,13 +427,20 @@ export default function Chat() {
                     </div>
                   ))}
                 </div>
-                {selectedMembers.length > 0 && groupName.trim() && (
-                  <div style={{ padding: 16, borderTop: '1px solid #2a3942' }}>
-                    <button className="btn-primary" onClick={handleCreateGroup} disabled={groupCreating} style={{ width: '100%' }}>
-                      {groupCreating ? 'Creating...' : `Create group · ${selectedMembers.length + 1} members`}
-                    </button>
-                  </div>
-                )}
+                <div style={{ padding: 16, borderTop: '1px solid #2a3942', flexShrink: 0 }}>
+                  <button
+                    className="btn-primary"
+                    onClick={handleCreateGroup}
+                    disabled={groupCreating || !groupName.trim() || selectedMembers.length < 1}
+                    style={{ width: '100%', opacity: (!groupName.trim() || selectedMembers.length < 1) ? 0.5 : 1 }}
+                  >
+                    {groupCreating
+                      ? 'Creating...'
+                      : selectedMembers.length > 0
+                        ? `Create group · ${selectedMembers.length + 1} members`
+                        : 'Add members to create group'}
+                  </button>
+                </div>
               </div>
             )}
 
