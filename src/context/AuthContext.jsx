@@ -1,34 +1,16 @@
 import { createContext, useContext, useState, useEffect } from 'react'
 import { supabase } from '../supabase/config'
 
-const API = import.meta.env.VITE_SERVER_URL || 'https://whatsapp-clone-server-pk4x.onrender.com'
 const AuthContext = createContext()
 export const useAuth = () => useContext(AuthContext)
 
-// ── Client-side SHA-256 hash — NO server call, no hanging ─────────────────
-// Replaces the old /hash-password endpoint which caused infinite "Creating..."
-// on Render free tier cold starts. SHA-256 via Web Crypto is built into every
-// modern browser and is instant.
+// ── Client-side SHA-256 hash ──────────────────────────────────────────────────
 async function hashPassword(password) {
   const encoder = new TextEncoder()
   const data = encoder.encode(password)
   const hashBuffer = await crypto.subtle.digest('SHA-256', data)
   const hashArray = Array.from(new Uint8Array(hashBuffer))
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
-}
-
-// ── Fetch with timeout so email send never blocks the UI ──────────────────
-async function fetchWithTimeout(url, options, timeoutMs = 10000) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    const res = await fetch(url, { ...options, signal: controller.signal })
-    clearTimeout(timer)
-    return res
-  } catch (e) {
-    clearTimeout(timer)
-    throw e
-  }
 }
 
 export function AuthProvider({ children }) {
@@ -42,7 +24,7 @@ export function AuthProvider({ children }) {
         const user = JSON.parse(saved)
         supabase
           .from('users')
-          .select('id, display_name, email, phone_number, photo_url, about, email_verified, online, last_seen')
+          .select('id, display_name, phone_number, photo_url, about, online, last_seen')
           .eq('id', user.id)
           .single()
           .then(({ data }) => {
@@ -60,66 +42,52 @@ export function AuthProvider({ children }) {
     }
   }, [])
 
-  const signup = async ({ email, password, name, phoneNumber }) => {
-    // 1. Check duplicate email
+  const signup = async ({ password, name, phoneNumber }) => {
+    if (!phoneNumber) throw new Error('Phone number is required.')
+
+    // 1. Check duplicate phone
     const { data: existing } = await supabase
       .from('users')
       .select('id')
-      .eq('email', email.toLowerCase())
+      .eq('phone_number', phoneNumber)
       .maybeSingle()
-    if (existing) throw new Error('Email already registered. Try signing in.')
+    if (existing) throw new Error('Phone number already registered. Try signing in.')
 
-    // 2. Hash password client-side (instant — no server needed)
+    // 2. Hash password client-side
     const passwordHash = await hashPassword(password)
 
-    // 3. Generate OTP
-    const code = Math.floor(100000 + Math.random() * 900000).toString()
-
-    // 4. Insert user into Supabase
+    // 3. Insert user into Supabase
     const { data: user, error } = await supabase
       .from('users')
       .insert({
         display_name: name,
-        email: email.toLowerCase(),
+        phone_number: phoneNumber,
         password_hash: passwordHash,
-        phone_number: phoneNumber || '',
         about: 'Hey there! I am using WhatsApp.',
-        email_verified: false,
-        verification_code: code,
-        code_expiry: new Date(Date.now() + 600000).toISOString(),
         online: true,
         last_seen: new Date().toISOString(),
       })
-      .select('id, display_name, email, phone_number, photo_url, about, email_verified')
+      .select('id, display_name, phone_number, photo_url, about')
       .single()
 
     if (error) throw new Error('Failed to create account. Please try again.')
 
-    // 5. Save user immediately — don't wait for email
     setCurrentUser(user)
     localStorage.setItem('wa_user', JSON.stringify(user))
-
-    // 6. Send OTP email in background (non-blocking, 10s timeout)
-    fetchWithTimeout(`${API}/send-code`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to_email: email, to_name: name, code }),
-    }, 10000).catch(e => console.warn('Email send failed (non-fatal):', e.message))
-
     return user
   }
 
-  const login = async (email, password) => {
+  const login = async (phoneNumber, password) => {
     const passwordHash = await hashPassword(password)
 
     const { data: user, error } = await supabase
       .from('users')
-      .select('id, display_name, email, phone_number, photo_url, about, email_verified')
-      .eq('email', email.toLowerCase())
+      .select('id, display_name, phone_number, photo_url, about')
+      .eq('phone_number', phoneNumber)
       .eq('password_hash', passwordHash)
       .single()
 
-    if (error || !user) throw new Error('Invalid email or password.')
+    if (error || !user) throw new Error('Invalid phone number or password.')
 
     await supabase
       .from('users')
@@ -129,48 +97,6 @@ export function AuthProvider({ children }) {
     setCurrentUser(user)
     localStorage.setItem('wa_user', JSON.stringify(user))
     return user
-  }
-
-  const forgotPassword = async (email) => {
-    const { data: user } = await supabase
-      .from('users')
-      .select('id, display_name')
-      .eq('email', email.toLowerCase())
-      .maybeSingle()
-    if (!user) throw new Error('No account found with that email.')
-
-    const code = Math.floor(100000 + Math.random() * 900000).toString()
-    await supabase
-      .from('users')
-      .update({ verification_code: code, code_expiry: new Date(Date.now() + 600000).toISOString() })
-      .eq('id', user.id)
-
-    await fetchWithTimeout(`${API}/send-code`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to_email: email, to_name: user.display_name, code }),
-    }, 10000)
-
-    return { email: email.toLowerCase(), userId: user.id }
-  }
-
-  const resetPassword = async (email, code, newPassword) => {
-    const { data: user } = await supabase
-      .from('users')
-      .select('id, verification_code, code_expiry')
-      .eq('email', email.toLowerCase())
-      .maybeSingle()
-    if (!user) throw new Error('User not found.')
-    if (user.code_expiry && new Date() > new Date(user.code_expiry))
-      throw new Error('Code expired. Request a new one.')
-    if (user.verification_code !== code) throw new Error('Wrong code. Try again.')
-    if (newPassword.length < 6) throw new Error('Password must be 6+ characters.')
-
-    const passwordHash = await hashPassword(newPassword)
-    await supabase
-      .from('users')
-      .update({ password_hash: passwordHash, verification_code: null, code_expiry: null })
-      .eq('id', user.id)
   }
 
   const updateProfile = async ({ name, about, photoFile }) => {
@@ -197,7 +123,7 @@ export function AuthProvider({ children }) {
       .from('users')
       .update(updates)
       .eq('id', currentUser.id)
-      .select('id, display_name, email, phone_number, photo_url, about, email_verified')
+      .select('id, display_name, phone_number, photo_url, about')
       .single()
 
     if (error) throw new Error('Failed to update profile')
@@ -210,7 +136,7 @@ export function AuthProvider({ children }) {
     if (!currentUser?.id) return
     const { data } = await supabase
       .from('users')
-      .select('id, display_name, email, phone_number, photo_url, about, email_verified')
+      .select('id, display_name, phone_number, photo_url, about')
       .eq('id', currentUser.id)
       .single()
     if (data) { setCurrentUser(data); localStorage.setItem('wa_user', JSON.stringify(data)) }
@@ -230,7 +156,7 @@ export function AuthProvider({ children }) {
   return (
     <AuthContext.Provider value={{
       currentUser, loading, signup, login,
-      forgotPassword, resetPassword, updateProfile, refreshProfile, logout,
+      updateProfile, refreshProfile, logout,
     }}>
       {children}
     </AuthContext.Provider>
