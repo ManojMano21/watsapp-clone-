@@ -135,7 +135,7 @@ export default function Chat() {
     if (!chatRows) { setChats([]); setChatsLoading(false); return }
     const enriched = await Promise.all(chatRows.map(async (chat) => {
       const { data: participants } = await supabase.from('chat_participants').select('user_id').eq('chat_id', chat.id)
-      if (chat.is_group) {
+      if (chat.is_group || chat.group_name) {
         const memberIds = participants?.map(p => p.user_id) || []
         const { data: members } = await supabase.from('users').select('id, display_name, photo_url, about, phone_number').in('id', memberIds)
         return { ...chat, groupMembers: members || [], otherUser: null }
@@ -257,8 +257,9 @@ export default function Chat() {
       await supabase.from('chats').insert({ id: chatId, is_group: true, group_name: groupName.trim(), group_photo_url: photoUrl, created_by: currentUser.id, updated_at: new Date().toISOString() })
       const allParticipants = [currentUser.id, ...selectedMembers].map(uid => ({ chat_id: chatId, user_id: uid }))
       await supabase.from('chat_participants').insert(allParticipants)
-      setShowNewGroup(false); loadChats()
+      setShowNewGroup(false)
       showToast(`Group "${groupName.trim()}" created!`, 'success')
+      setTimeout(() => loadChats(), 600)
     } catch (e) { showToast('Failed to create group', 'error'); console.error(e) }
     finally { setGroupCreating(false) }
   }
@@ -369,8 +370,9 @@ export default function Chat() {
   }
 
   // Chat display helpers
-  const getChatName = (chat) => chat.is_group ? (chat.group_name || 'Group') : (chat.otherUser?.display_name || 'Unknown')
-  const getChatPhoto = (chat) => chat.is_group ? chat.group_photo_url : chat.otherUser?.photo_url
+  const isGroupChat = (chat) => !!(chat.is_group || chat.group_name)
+  const getChatName = (chat) => isGroupChat(chat) ? (chat.group_name || 'Group') : (chat.otherUser?.display_name || 'Unknown')
+  const getChatPhoto = (chat) => isGroupChat(chat) ? chat.group_photo_url : chat.otherUser?.photo_url
 
   return (
     <div className="app-container" onClick={() => contextMenu && setContextMenu(null)}>
