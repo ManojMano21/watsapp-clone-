@@ -101,6 +101,11 @@ export default function Chat() {
   const [groupCreating, setGroupCreating] = useState(false)
   const groupPhotoRef = useRef(null)
 
+  // ── Group editing state ───────────────────────────────────────────────────
+  const [editingGroupName, setEditingGroupName] = useState(false)
+  const [newGroupName, setNewGroupName] = useState('')
+  const [groupInfoPhotoRef] = useState(() => ({ current: null }))
+
   // ── Voice recording state ─────────────────────────────────────────────────
   const [isRecording, setIsRecording] = useState(false)
   const [recordingTime, setRecordingTime] = useState(0)
@@ -420,6 +425,63 @@ export default function Chat() {
     setRecordingTime(0)
   }
 
+  // ── Group management ─────────────────────────────────────────────────────
+  const handleUpdateGroupName = async () => {
+    if (!newGroupName.trim() || !activeChat?.id) return
+    try {
+      await supabase.from('chats').update({ group_name: newGroupName.trim() }).eq('id', activeChat.id)
+      setActiveChat(prev => ({ ...prev, group_name: newGroupName.trim() }))
+      setEditingGroupName(false)
+      loadChats()
+      showToast('Group name updated', 'success')
+    } catch (e) { showToast('Failed to update name', 'error') }
+  }
+
+  const handleUpdateGroupPhoto = async (e) => {
+    const f = e.target.files?.[0]; if (!f || !activeChat?.id) return
+    if (f.size > 5 * 1024 * 1024) { showToast('Image must be under 5MB', 'error'); return }
+    try {
+      const fp = `groups/${activeChat.id}_${Date.now()}`
+      const { error: ue } = await supabase.storage.from('chat-files').upload(fp, f, { upsert: true })
+      if (ue) throw ue
+      const { data: u } = supabase.storage.from('chat-files').getPublicUrl(fp)
+      await supabase.from('chats').update({ group_photo_url: u.publicUrl }).eq('id', activeChat.id)
+      setActiveChat(prev => ({ ...prev, group_photo_url: u.publicUrl }))
+      loadChats()
+      showToast('Group photo updated', 'success')
+    } catch (e) { showToast('Failed to update photo', 'error') }
+  }
+
+  const handleMakeAdmin = async (memberId) => {
+    if (!activeChat?.id) return
+    try {
+      await supabase.from('chats').update({ created_by: memberId }).eq('id', activeChat.id)
+      setActiveChat(prev => ({ ...prev, created_by: memberId }))
+      loadChats()
+      showToast('Admin updated', 'success')
+    } catch (e) { showToast('Failed to update admin', 'error') }
+  }
+
+  const handleRemoveMember = async (memberId) => {
+    if (!activeChat?.id || memberId === currentUser.id) return
+    try {
+      await supabase.from('chat_participants').delete().eq('chat_id', activeChat.id).eq('user_id', memberId)
+      setActiveChat(prev => ({ ...prev, groupMembers: prev.groupMembers?.filter(m => m.id !== memberId) }))
+      loadChats()
+      showToast('Member removed', 'success')
+    } catch (e) { showToast('Failed to remove member', 'error') }
+  }
+
+  const handleLeaveGroup = async () => {
+    if (!activeChat?.id) return
+    try {
+      await supabase.from('chat_participants').delete().eq('chat_id', activeChat.id).eq('user_id', currentUser.id)
+      setActiveChat(null); setShowContactInfo(false); setShowMobileChat(false)
+      loadChats()
+      showToast('You left the group', 'success')
+    } catch (e) { showToast('Failed to leave group', 'error') }
+  }
+
   const handleNewChat = async () => { setShowNewChat(true); const { data } = await supabase.from('users').select('*').neq('id', currentUser.id).order('display_name'); setAllUsers(data || []) }
   const handleSelectUser = async (user) => {
     const chatId = getChatId(currentUser.id, user.id)
@@ -582,23 +644,56 @@ export default function Chat() {
 
           {activeTab === 'settings' && (<>
             <div className="sidebar-header"><div className="sidebar-header-left"><span style={{ color: '#e9edef', fontSize: 20, fontWeight: 600 }}>Settings</span></div></div>
-            <div className="settings-panel">
-              <div className="settings-profile" style={{ cursor: 'pointer' }} onClick={openProfileEdit}>
-                <div style={{ position: 'relative' }}>
-                  <Avatar src={userProfile?.photo_url} size={80} name={userProfile?.display_name} />
-                  <div style={{ position: 'absolute', bottom: 0, right: 0, width: 24, height: 24, background: '#00a884', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px solid #111b21' }}>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            <div className="settings-panel" style={{ overflowY: 'auto' }}>
+
+              {/* Profile card */}
+              <div onClick={openProfileEdit} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '20px 16px', cursor: 'pointer', background: '#202c33', borderBottom: '6px solid #111b21' }}>
+                <div style={{ position: 'relative', flexShrink: 0 }}>
+                  <Avatar src={userProfile?.photo_url} size={66} name={userProfile?.display_name} />
+                  <div style={{ position: 'absolute', bottom: 0, right: 0, width: 22, height: 22, background: '#00a884', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px solid #202c33' }}>
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                   </div>
                 </div>
-                <div className="settings-profile-info">
-                  <div style={{ color: '#e9edef', fontSize: 18 }}>{userProfile?.display_name}</div>
-                  <div style={{ color: '#8696a0', fontSize: 14 }}>{userProfile?.about || 'Hey there! I am using WhatsApp.'}</div>
-                  <div style={{ color: '#00a884', fontSize: 12, marginTop: 4 }}>Tap to edit profile</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ color: '#e9edef', fontSize: 17, fontWeight: 600 }}>{userProfile?.display_name}</div>
+                  <div style={{ color: '#8696a0', fontSize: 13, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{userProfile?.about || 'Hey there! I am using WhatsApp.'}</div>
+                </div>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8696a0" strokeWidth="2"><polyline points="9 18 15 12 9 6"/></svg>
+              </div>
+
+              {/* Account info */}
+              <div style={{ background: '#202c33', marginBottom: 6 }}>
+                <div style={{ padding: '14px 20px 6px', color: '#00a884', fontSize: 13, fontWeight: 600 }}>Account</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '12px 20px', borderBottom: '1px solid #2a3942' }}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8696a0" strokeWidth="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                  <div>
+                    <div style={{ color: '#e9edef', fontSize: 15 }}>{userProfile?.phone_number || 'No phone'}</div>
+                    <div style={{ color: '#8696a0', fontSize: 12 }}>Phone number</div>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '12px 20px' }}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8696a0" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                  <div>
+                    <div style={{ color: '#e9edef', fontSize: 15 }}>{userProfile?.about || 'Hey there! I am using WhatsApp.'}</div>
+                    <div style={{ color: '#8696a0', fontSize: 12 }}>About</div>
+                  </div>
                 </div>
               </div>
-              <div className="settings-items">
-                <div className="settings-item" onClick={logout}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ea0038" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg><span style={{ color: '#ea0038' }}>Log out</span></div>
+
+              {/* Actions */}
+              <div style={{ background: '#202c33' }}>
+                <div style={{ padding: '14px 20px 6px', color: '#00a884', fontSize: 13, fontWeight: 600 }}>Actions</div>
+                <div onClick={openProfileEdit} style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '14px 20px', cursor: 'pointer', borderBottom: '1px solid #2a3942' }}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8696a0" strokeWidth="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                  <span style={{ color: '#e9edef', fontSize: 15 }}>Edit profile</span>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8696a0" strokeWidth="2" style={{ marginLeft: 'auto' }}><polyline points="9 18 15 12 9 6"/></svg>
+                </div>
+                <div onClick={logout} style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '14px 20px', cursor: 'pointer' }}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ea0038" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                  <span style={{ color: '#ea0038', fontSize: 15 }}>Log out</span>
+                </div>
               </div>
+
             </div>
           </>)}
         </div>
@@ -724,34 +819,99 @@ export default function Chat() {
             <div className="contact-info-body">
               {activeChat.is_group ? (
                 <>
+                  {/* Group photo — clickable for admin */}
                   <div className="contact-info-avatar-section">
-                    <Avatar src={activeChat.group_photo_url} size={200} name={activeChat.group_name} isGroup />
-                    <h2>{activeChat.group_name}</h2>
+                    <div style={{ position: 'relative', cursor: activeChat.created_by === currentUser.id ? 'pointer' : 'default' }}
+                      onClick={() => activeChat.created_by === currentUser.id && groupInfoPhotoRef.current?.click()}>
+                      <Avatar src={activeChat.group_photo_url} size={110} name={activeChat.group_name} isGroup />
+                      {activeChat.created_by === currentUser.id && (
+                        <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', background: 'rgba(0,0,0,0.45)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2 }}>
+                          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                          <span style={{ color: '#fff', fontSize: 10 }}>Change</span>
+                        </div>
+                      )}
+                    </div>
+                    <input ref={el => groupInfoPhotoRef.current = el} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleUpdateGroupPhoto} />
+                    {/* Group name — editable inline for admin */}
+                    {editingGroupName ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, width: '100%', padding: '0 16px' }}>
+                        <input autoFocus value={newGroupName} onChange={e => setNewGroupName(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleUpdateGroupName()}
+                          style={{ flex: 1, background: 'none', border: 'none', borderBottom: '2px solid #00a884', outline: 'none', color: '#e9edef', fontSize: 18, fontWeight: 600, textAlign: 'center', padding: '4px 0' }} maxLength={50} />
+                        <button onClick={handleUpdateGroupName} style={{ background: '#00a884', border: 'none', borderRadius: '50%', width: 30, height: 30, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>
+                        </button>
+                        <button onClick={() => setEditingGroupName(false)} style={{ background: '#374955', border: 'none', borderRadius: '50%', width: 30, height: 30, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+                        <h2 style={{ margin: 0 }}>{activeChat.group_name}</h2>
+                        {activeChat.created_by === currentUser.id && (
+                          <button onClick={() => { setNewGroupName(activeChat.group_name || ''); setEditingGroupName(true) }}
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#8696a0', padding: 4 }}>
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                          </button>
+                        )}
+                      </div>
+                    )}
                     <p className="contact-info-phone">Group · {activeChat.groupMembers?.length || 0} members</p>
                   </div>
+
+                  {/* Members list */}
                   <div className="contact-info-section">
-                    <label>Members</label>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
-                      {(activeChat.groupMembers || []).map((member, i) => (
-                        <div key={member.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                          <div style={{ position: 'relative' }}>
-                            <Avatar src={member.photo_url} size={38} name={member.display_name} />
-                            {isOnline(member.id) && <div className="online-dot" style={{ width: 10, height: 10 }} />}
-                          </div>
-                          <div>
-                            <div style={{ color: '#e9edef', fontSize: 14, fontWeight: 500 }}>
-                              {member.id === currentUser.id ? 'You' : member.display_name}
-                              {member.id === activeChat.created_by && <span style={{ color: '#00a884', fontSize: 11, marginLeft: 6 }}>Admin</span>}
+                    <label>{activeChat.groupMembers?.length || 0} members</label>
+                    <div style={{ display: 'flex', flexDirection: 'column', marginTop: 8 }}>
+                      {(activeChat.groupMembers || []).map(member => {
+                        const isAdmin = member.id === activeChat.created_by
+                        const isSelf = member.id === currentUser.id
+                        const amAdmin = activeChat.created_by === currentUser.id
+                        return (
+                          <div key={member.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid #2a3942' }}>
+                            <div style={{ position: 'relative' }}>
+                              <Avatar src={member.photo_url} size={42} name={member.display_name} />
+                              {isOnline(member.id) && <div className="online-dot" />}
                             </div>
-                            <div style={{ color: '#8696a0', fontSize: 12 }}>{member.about || member.phone_number}</div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ color: '#e9edef', fontSize: 14, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                {isSelf ? 'You' : member.display_name}
+                                {isAdmin && <span style={{ background: '#1a3a2a', color: '#00a884', fontSize: 10, padding: '2px 6px', borderRadius: 4, fontWeight: 600 }}>Admin</span>}
+                              </div>
+                              <div style={{ color: '#8696a0', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{member.phone_number || member.about}</div>
+                            </div>
+                            {/* Admin actions */}
+                            {amAdmin && !isSelf && (
+                              <div style={{ display: 'flex', gap: 4 }}>
+                                {!isAdmin && (
+                                  <button onClick={() => handleMakeAdmin(member.id)} title="Make admin"
+                                    style={{ background: '#1a3a2a', border: 'none', borderRadius: 6, padding: '5px 8px', cursor: 'pointer', color: '#00a884', fontSize: 11, whiteSpace: 'nowrap' }}>
+                                    Make admin
+                                  </button>
+                                )}
+                                <button onClick={() => handleRemoveMember(member.id)} title="Remove"
+                                  style={{ background: '#3a1a1a', border: 'none', borderRadius: 6, padding: '5px 8px', cursor: 'pointer', color: '#ea0038', fontSize: 11 }}>
+                                  Remove
+                                </button>
+                              </div>
+                            )}
                           </div>
-                        </div>
-                      ))}
+                        )
+                      })}
                     </div>
                   </div>
+
+                  {/* Media */}
                   <div className="contact-info-section">
                     <div className="contact-info-section-header"><span>Media, links and docs</span><span className="contact-info-count">{contactMedia.length}</span></div>
                     {contactMedia.length > 0 ? <div className="contact-media-grid">{contactMedia.filter(m => m.type === 'image').slice(0, 6).map(m => <img key={m.id} src={m.file_url} alt="" className="contact-media-thumb" onClick={() => window.open(m.file_url)} />)}</div> : <p className="contact-info-empty">No media shared yet</p>}
+                  </div>
+
+                  {/* Leave group */}
+                  <div style={{ padding: '16px', borderTop: '1px solid #2a3942' }}>
+                    <button onClick={handleLeaveGroup} style={{ width: '100%', background: 'none', border: '1px solid #ea0038', borderRadius: 8, padding: '10px', color: '#ea0038', fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                      Leave group
+                    </button>
                   </div>
                 </>
               ) : (
