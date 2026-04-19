@@ -101,6 +101,13 @@ export default function Chat() {
   const [groupCreating, setGroupCreating] = useState(false)
   const groupPhotoRef = useRef(null)
 
+  // ── Voice recording state ─────────────────────────────────────────────────
+  const [isRecording, setIsRecording] = useState(false)
+  const [recordingTime, setRecordingTime] = useState(0)
+  const mediaRecorderRef = useRef(null)
+  const audioChunksRef = useRef([])
+  const recordingTimerRef = useRef(null)
+
   const endRef = useRef(null)
   const textRef = useRef(null)
   const imgRef = useRef(null)
@@ -216,7 +223,10 @@ export default function Chat() {
 
     const { data: newMsg } = await supabase.from('messages').insert({ chat_id: activeChat.id, sender_id: currentUser.id, text: msg, type: 'text', read: false }).select().single()
     if (newMsg) {
-      setMessages(prev => prev.map(m => m.id === tempId ? newMsg : m))
+      setMessages(prev => {
+        if (prev.find(m => m.id === newMsg.id)) return prev.filter(m => m.id !== tempId)
+        return prev.map(m => m.id === tempId ? newMsg : m)
+      })
       if (!activeChat.is_group) socketSend({ chatId: activeChat.id, id: newMsg.id, ...newMsg, senderName: userProfile?.display_name, recipientId: activeChat.otherUser?.id })
     }
     await supabase.from('chats').update({ last_message_text: msg, last_message_sender: currentUser.id, last_message_type: 'text', last_message_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', activeChat.id)
@@ -325,7 +335,8 @@ export default function Chat() {
 
   const drainIceCandidateQueue = async () => { const pc = peerConnection.current; if (!pc) return; while (iceCandidateQueue.current.length > 0) { const c = iceCandidateQueue.current.shift(); try { await pc.addIceCandidate(new RTCIceCandidate(c)) } catch {} } }
   const startCall = useCallback(async (type) => {
-    if (!activeChat?.otherUser?.id || activeChat?.is_group || callState) return
+    if (activeChat?.is_group) { showToast('Calls are not supported in groups yet', 'error'); return }
+    if (!activeChat?.otherUser?.id || callState) return
     const peer = { id: activeChat.otherUser.id, name: activeChat.otherUser.display_name, photo: activeChat.otherUser.photo_url }
     setCallPeer(peer); setCallType(type); setCallState('calling')
     initiateCall({ callerId: currentUser.id, callerName: userProfile?.display_name, callerPhoto: userProfile?.photo_url, recipientId: peer.id, callType: type })
@@ -354,6 +365,58 @@ export default function Chat() {
   useEffect(() => { if (callEnded) cleanupCall() }, [callEnded, cleanupCall])
   useEffect(() => { if (!remoteOffer || !peerConnection.current) return; (async () => { try { await peerConnection.current.setRemoteDescription(new RTCSessionDescription(remoteOffer.offer)); await drainIceCandidateQueue(); const answer = await peerConnection.current.createAnswer(); await peerConnection.current.setLocalDescription(answer); sendAnswer({ targetId: remoteOffer.callerId, answer }) } catch (e) { console.error(e) } })() }, [remoteOffer, sendAnswer])
   useEffect(() => { if (!remoteAnswer || !peerConnection.current) return; (async () => { try { await peerConnection.current.setRemoteDescription(new RTCSessionDescription(remoteAnswer.answer)); await drainIceCandidateQueue() } catch (e) { console.error(e) } })() }, [remoteAnswer])
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const recorder = new MediaRecorder(stream)
+      mediaRecorderRef.current = recorder
+      audioChunksRef.current = []
+      recorder.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data) }
+      recorder.start()
+      setIsRecording(true)
+      setRecordingTime(0)
+      recordingTimerRef.current = setInterval(() => setRecordingTime(t => t + 1), 1000)
+    } catch (e) { showToast('Microphone access denied', 'error') }
+  }
+
+  const stopRecording = async () => {
+    if (!mediaRecorderRef.current) return
+    mediaRecorderRef.current.stop()
+    mediaRecorderRef.current.stream.getTracks().forEach(t => t.stop())
+    clearInterval(recordingTimerRef.current)
+    setIsRecording(false)
+    setRecordingTime(0)
+    mediaRecorderRef.current.onstop = async () => {
+      if (!activeChat?.id) return
+      const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
+      if (blob.size < 1000) return
+      setUploading(true)
+      try {
+        const fp = `${activeChat.id}/voice_${Date.now()}.webm`
+        const { error: ue } = await supabase.storage.from('chat-files').upload(fp, blob)
+        if (ue) throw ue
+        const { data: u } = supabase.storage.from('chat-files').getPublicUrl(fp)
+        const { data: newMsg } = await supabase.from('messages').insert({ chat_id: activeChat.id, sender_id: currentUser.id, type: 'audio', file_url: u.publicUrl, file_size: blob.size, read: false }).select().single()
+        if (newMsg) {
+          setMessages(prev => prev.find(m => m.id === newMsg.id) ? prev : [...prev, newMsg])
+          scroll()
+        }
+        await supabase.from('chats').update({ last_message_text: '🎤 Voice message', last_message_sender: currentUser.id, last_message_type: 'audio', last_message_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', activeChat.id)
+      } catch (e) { showToast('Failed to send voice message', 'error') }
+      finally { setUploading(false) }
+    }
+  }
+
+  const cancelRecording = () => {
+    if (!mediaRecorderRef.current) return
+    mediaRecorderRef.current.stream.getTracks().forEach(t => t.stop())
+    clearInterval(recordingTimerRef.current)
+    mediaRecorderRef.current = null
+    audioChunksRef.current = []
+    setIsRecording(false)
+    setRecordingTime(0)
+  }
 
   const handleNewChat = async () => { setShowNewChat(true); const { data } = await supabase.from('users').select('*').neq('id', currentUser.id).order('display_name'); setAllUsers(data || []) }
   const handleSelectUser = async (user) => {
@@ -557,7 +620,7 @@ export default function Chat() {
                 </div>
               </div>
               <div className="chat-header-actions">
-                <button className={'icon-btn' + (showMsgSearch ? ' active-icon' : '')} title="Search messages" onClick={() => { setShowMsgSearch(s => !s); if (showMsgSearch) setMsgSearch('') }}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></button>
+                <button className={'icon-btn' + (showMsgSearch ? ' active-icon' : '')} title="Search messages" onClick={() => { const next = !showMsgSearch; setShowMsgSearch(next); if (!next) setMsgSearch('') }}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></button>
                 {!activeChat.is_group && <>
                   <button className="icon-btn" title="Video call" onClick={() => startCall('video')}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg></button>
                   <button className="icon-btn" title="Voice call" onClick={() => startCall('audio')}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></button>
@@ -599,6 +662,12 @@ export default function Chat() {
                           {sender?.display_name || 'Unknown'}
                         </div>
                       )}
+                      {msg.type === 'audio' && msg.file_url && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 200, padding: '2px 0' }}>
+                          <svg width="20" height="20" viewBox="0 0 24 24" fill={own ? '#fff' : '#00a884'}><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2" fill="none" stroke={own ? '#fff' : '#00a884'} strokeWidth="2"/></svg>
+                          <audio controls src={msg.file_url} style={{ height: 32, flex: 1, minWidth: 0, maxWidth: 200 }} />
+                        </div>
+                      )}
                       {msg.type === 'image' && msg.file_url && <img className="msg-image" src={msg.file_url} alt="" onClick={() => window.open(msg.file_url)} />}
                       {msg.type === 'document' && msg.file_url && <a className="msg-doc" href={msg.file_url} target="_blank" rel="noopener noreferrer"><span style={{ fontSize: 24 }}>📄</span><div style={{ flex: 1, minWidth: 0 }}><div className="msg-doc-name">{msg.file_name}</div><div style={{ color: '#8696a0', fontSize: 12 }}>{msg.file_size ? (msg.file_size/1024).toFixed(1)+' KB' : ''}</div></div></a>}
                       {msg.text && <span className="msg-text">{msg.text}</span>}
@@ -616,7 +685,27 @@ export default function Chat() {
               {showAttach && (<><div className="overlay" onClick={() => setShowAttach(false)} /><div className="attach-menu"><button className="attach-option" onClick={() => imgRef.current?.click()}><div className="attach-icon photo"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></div>Photos and Videos</button><button className="attach-option" onClick={() => docRef.current?.click()}><div className="attach-icon doc"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div>Document</button></div></>)}
               <button className="icon-btn" onClick={() => setShowAttach(!showAttach)}><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
               <div className="msg-input-box"><textarea ref={textRef} className="msg-textarea" placeholder="Type a message" rows={1} value={text} onChange={e => { setText(e.target.value); handleTyping() }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }} onInput={e => { e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 130) + 'px' }} /></div>
-              <button className="send-btn" onClick={handleSend}>{text.trim() || previewFile ? <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg> : <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>}</button>
+              {isRecording ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingRight: 8 }}>
+                  <div style={{ color: '#ea0038', fontSize: 13, fontWeight: 600, minWidth: 36 }}>
+                    {Math.floor(recordingTime/60)}:{String(recordingTime%60).padStart(2,'0')}
+                  </div>
+                  <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#ea0038', animation: 'pulse 1s infinite' }} />
+                  <button className="icon-btn" onClick={cancelRecording} title="Cancel" style={{ color: '#8696a0' }}>
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button>
+                  <button className="send-btn" onClick={stopRecording} style={{ background: '#ea0038' }} title="Send voice">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                  </button>
+                </div>
+              ) : (
+                <button className="send-btn" onClick={text.trim() || previewFile ? handleSend : startRecording}>
+                  {text.trim() || previewFile
+                    ? <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                    : <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+                  }
+                </button>
+              )}
               <input ref={imgRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={e => handleFileSelect(e, 'image')} />
               <input ref={docRef} type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip" style={{ display: 'none' }} onChange={e => handleFileSelect(e, 'document')} />
             </div>
@@ -697,16 +786,52 @@ export default function Chat() {
       <audio ref={remoteAudioRef} autoPlay playsInline />
 
       {callState && (
-        <div className="call-overlay"><div className="call-active">
-          {callType === 'video' && (<div className="call-video-container"><video ref={remoteVideoRef} autoPlay playsInline className="call-video-remote" /><video ref={localVideoRef} autoPlay playsInline muted className="call-video-local" /></div>)}
-          {callType === 'audio' && (<div className="call-audio-container"><Avatar src={callPeer?.photo} size={120} name={callPeer?.name} /><h2>{callPeer?.name}</h2><p>{callState === 'calling' ? 'Calling...' : callState === 'ringing' ? 'Ringing...' : fmtCallDuration(callDuration)}</p></div>)}
-          {callType === 'video' && (<div className="call-video-info"><h3>{callPeer?.name}</h3><p>{callState === 'calling' ? 'Calling...' : callState === 'ringing' ? 'Ringing...' : fmtCallDuration(callDuration)}</p></div>)}
-          <div className="call-controls">
-            <button className={'call-control-btn' + (isMuted ? ' active' : '')} onClick={toggleMute}>{isMuted ? <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2"/></svg> : <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>}</button>
-            {callType === 'video' && (<button className={'call-control-btn' + (isCameraOff ? ' active' : '')} onClick={toggleCamera}>{isCameraOff ? <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="1" y1="1" x2="23" y2="23"/><path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34"/></svg> : <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>}</button>)}
-            <button className="call-control-btn end" onClick={handleEndCall}><svg width="28" height="28" viewBox="0 0 24 24" fill="#fff"><path d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08a.956.956 0 0 1-.29-.7c0-.28.11-.53.29-.71C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.67c.18.18.29.43.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.1-.7-.28-.79-.74-1.69-1.36-2.67-1.85-.33-.16-.56-.5-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg></button>
+        <div style={{ position: 'fixed', inset: 0, background: '#000', zIndex: 9999, display: 'flex', flexDirection: 'column' }}>
+          {/* Video streams */}
+          {callType === 'video' && (
+            <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+              <video ref={remoteVideoRef} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'cover', background: '#111' }} />
+              <video ref={localVideoRef} autoPlay playsInline muted style={{ position: 'absolute', bottom: 16, right: 16, width: 120, height: 160, objectFit: 'cover', borderRadius: 12, border: '2px solid #fff', background: '#222' }} />
+            </div>
+          )}
+          {/* Audio call */}
+          {callType === 'audio' && (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16 }}>
+              <Avatar src={callPeer?.photo} size={120} name={callPeer?.name} />
+              <h2 style={{ color: '#fff', fontSize: 24, margin: 0 }}>{callPeer?.name}</h2>
+              <p style={{ color: '#aebac1', fontSize: 16, margin: 0 }}>
+                {callState === 'calling' ? 'Calling...' : callState === 'ringing' ? 'Ringing...' : fmtCallDuration(callDuration)}
+              </p>
+            </div>
+          )}
+          {/* Call info overlay for video */}
+          {callType === 'video' && (
+            <div style={{ position: 'absolute', top: 20, left: 0, right: 0, textAlign: 'center', pointerEvents: 'none' }}>
+              <div style={{ color: '#fff', fontSize: 18, fontWeight: 600, textShadow: '0 1px 4px rgba(0,0,0,0.8)' }}>{callPeer?.name}</div>
+              <div style={{ color: 'rgba(255,255,255,0.8)', fontSize: 14, textShadow: '0 1px 4px rgba(0,0,0,0.8)' }}>
+                {callState === 'calling' ? 'Calling...' : callState === 'ringing' ? 'Ringing...' : fmtCallDuration(callDuration)}
+              </div>
+            </div>
+          )}
+          {/* Controls bar */}
+          <div style={{ padding: '20px 0 32px', background: callType === 'video' ? 'linear-gradient(transparent, rgba(0,0,0,0.8))' : 'transparent', display: 'flex', justifyContent: 'center', gap: 24, position: callType === 'video' ? 'absolute' : 'relative', bottom: 0, left: 0, right: 0 }}>
+            <button onClick={toggleMute} style={{ width: 60, height: 60, borderRadius: '50%', background: isMuted ? '#fff' : 'rgba(255,255,255,0.2)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              {isMuted
+                ? <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#000" strokeWidth="2"><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2"/></svg>
+                : <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>}
+            </button>
+            {callType === 'video' && (
+              <button onClick={toggleCamera} style={{ width: 60, height: 60, borderRadius: '50%', background: isCameraOff ? '#fff' : 'rgba(255,255,255,0.2)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                {isCameraOff
+                  ? <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#000" strokeWidth="2"><line x1="1" y1="1" x2="23" y2="23"/><path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34"/></svg>
+                  : <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>}
+              </button>
+            )}
+            <button onClick={handleEndCall} style={{ width: 60, height: 60, borderRadius: '50%', background: '#ea0038', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="#fff"><path d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08a.956.956 0 0 1-.29-.7c0-.28.11-.53.29-.71C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.67c.18.18.29.43.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.1-.7-.28-.79-.74-1.69-1.36-2.67-1.85-.33-.16-.56-.5-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg>
+            </button>
           </div>
-        </div></div>
+        </div>
       )}
 
       {contextMenu && (
