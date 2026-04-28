@@ -47,7 +47,7 @@ export default function Login({ onPhoneSubmit }) {
   const [error, setError] = useState('')
 
   const handleNext = () => {
-    if (!phone || phone.length < 6) { setError('Enter a valid phone number'); return }
+    if (!phone || phone.length < 10) { setError('Enter a valid phone number'); return }
     onPhoneSubmit(country.code + phone)
   }
 
